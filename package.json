@@ -1,0 +1,11 @@
+{
+  "name": "htbasw-reader",
+  "private": true,
+  "version": "1.2.1",
+  "scripts": {
+    "build": "python3 scripts/build.py",
+    "build:cloudflare": "python3 scripts/build.py && python3 scripts/export_cloudflare.py",
+    "test": "python3 -m unittest discover -s tests -v",
+    "preview": "python3 scripts/preview.py"
+  }
+}
