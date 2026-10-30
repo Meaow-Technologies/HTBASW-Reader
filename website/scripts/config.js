@@ -2,7 +2,7 @@
 // Empty entries stay visible and show a "coming soon" notice when clicked.
 window.READER_CONFIG = {
   githubUrl: "https://github.com/Meaow-Technologies/HTBASW-Reader", // GitHub repository URL
-  contributionUrl: "", // Contributing guide URL
+  contributionUrl: "https://github.com/Meaow-Technologies/HTBASW-Reader?tab=contributing-ov-file", // Contributing guide URL
   donationUrl: "https://patreon.com/MrMeaow46", // Donation page URL
   discordUrl: "https://discord.gg/mRKHnmQnYJ", // Discord server invite URL
   giscus: {
