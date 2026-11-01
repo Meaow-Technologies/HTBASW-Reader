@@ -40,10 +40,14 @@ The project currently publishes one edition:
   EPUB 3 file.
 - **Bookmarks & Progress** — Stored locally in the browser with no account or
   synchronization required.
-- **Chapter Comments** — Per-chapter discussions powered by
-  [Giscus](https://giscus.app) and GitHub Discussions.
+- **Chapter Comments** — Discord-authenticated per-chapter comments with
+  replies, reactions, voting, moderation, and legacy
+  [Giscus](https://giscus.app) discussions.
 - **Discord Notifications** — Optional GitHub Discussion comment forwarding
   through a Cloudflare Pages webhook.
+- **Cloudflare D1 Comments** — The native comment API uses a D1 binding named
+  `COMMENTS_DB`; initialize it with `functions/schema.sql` and apply the SQL
+  files in `functions/migrations/`.
 - **Privacy First** — No trackers, no ads. Reading settings and progress stay
   in the visitor's browser.
 

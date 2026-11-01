@@ -36,6 +36,7 @@ if (!_isRedirecting) {
     theme: "dark",
     size: 20,
     font: "bookerly",
+    disableScrollNav: false,
   };
   try {
     Object.assign(
@@ -202,6 +203,7 @@ if (!_isRedirecting) {
     $("#size-down").disabled = state.size <= 16;
     $("#size-up").disabled = state.size >= 30;
     $("#font").value = state.font;
+    $("#disable-scroll-nav").checked = Boolean(state.disableScrollNav);
     window.readerComments?.theme();
   }
   function choose(v) {
@@ -550,6 +552,7 @@ if (!_isRedirecting) {
       state.theme = "dark";
       state.font = "bookerly";
       state.size = 20;
+      state.disableScrollNav = false;
       settings();
       save();
     };
@@ -650,6 +653,10 @@ if (!_isRedirecting) {
   }
   $("#size-down").onclick = () => resizeText(-1);
   $("#size-up").onclick = () => resizeText(1);
+  $("#disable-scroll-nav").onchange = (e) => {
+    state.disableScrollNav = e.target.checked;
+    save();
+  };
 
   // ── Reader header: auto-hide on scroll-down, reveal on scroll-up / left-click ──
   (function () {
@@ -679,7 +686,7 @@ if (!_isRedirecting) {
         if (!scrollTicking) {
           requestAnimationFrame(() => {
             const delta = scrollY - lastY;
-            if (delta > 6 && !headerPinnedByClick) {
+            if (delta > 6 && !headerPinnedByClick && !state.disableScrollNav) {
               hideHeader();
             } else if (delta < -6) {
               showHeader();

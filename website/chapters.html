@@ -464,7 +464,15 @@
         <div class="comments-divider"></div>
         <h2 id="comments-heading">Chapter discussion</h2>
         <p class="muted" id="comments-status" role="status"></p>
-        <div id="giscus-thread" class="giscus"></div>
+        <p class="comments-rules-notice">
+          Friendly reminder: NO SPOILERS &amp; swearing is okay, but racial and
+          ethnic slurs will be removed by moderators.
+        </p>
+        <div id="native-comments"></div>
+        <details id="legacy-comments" class="legacy-comments">
+          <summary>Legacy GitHub Comments</summary>
+          <div id="giscus-thread" class="giscus"></div>
+        </details>
       </section>
     </section>
     <dialog id="contents" aria-labelledby="list-title">
@@ -642,6 +650,23 @@
                   +
                 </button>
               </div>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-toggle-card" for="disable-scroll-nav">
+                <span>
+                  <span class="settings-toggle-title">Disable Scroll Navigation</span>
+                  <small class="settings-help-text"
+                    >Tap or click the reading area to show or hide the top
+                    navigation.</small
+                  >
+                </span>
+                <input
+                  id="disable-scroll-nav"
+                  class="settings-switch"
+                  type="checkbox"
+                />
+              </label>
             </div>
 
             <div class="settings-field">

@@ -1,312 +1,558 @@
-// Giscus uses a stable edition/chapter key, never the shared index.html pathname.
+"use strict";
+
 (() => {
-  const GISCUS_SESSION_KEY = "giscus-session";
-  const params = new URLSearchParams(location.search);
-  const giscusSession = params.get("giscus");
-
-  if (giscusSession) {
+  const GISCUS_THEME_BASE = "https://htbasw.pages.dev/giscus";
+  const GISCUS_THEME_VERSION = "owners-v3";
+  const EMOJIS = ["❤️", "😂", "😮", "😢", "😭", "🫂", "🎉", "🔥", "👀", "💀"];
+  const SORT_STORAGE_KEY = "htbasw-comment-sort";
+  const SORT_MODES = ["popular", "oldest", "newest"];
+  function storedSortMode() {
     try {
-      localStorage.setItem(GISCUS_SESSION_KEY, JSON.stringify(giscusSession));
-    } catch {}
-
-    if (window.opener && window.opener !== window) {
-      try {
-        window.close();
-      } catch {}
-    } else {
-      // returnTo is now a path like /first/chapter-5
-      let returnTo = sessionStorage.getItem("giscus-return-to");
-
-      if (!returnTo) {
-        try {
-          const state = JSON.parse(
-            localStorage.getItem("star-writer-reference-reader") || "{}",
-          );
-          const v = state.version || "first";
-          const n = state.progress?.[v]?.number || 1;
-          returnTo = `/${v}/chapter-${n}`;
-        } catch {}
-      }
-
-      params.delete("giscus");
-      const qs = params.toString() ? `?${params.toString()}` : "";
-      // Navigate cleanly to the chapter path (removes the ?giscus param)
-      const cleanUrl = returnTo ? returnTo + qs : `${location.pathname}${qs}`;
-      history.replaceState(null, "", cleanUrl);
-      // If we're not already on the correct chapter path, navigate there
-      if (returnTo && location.pathname !== returnTo.replace(/\?.*$/, "")) {
-        location.replace(cleanUrl);
-      }
+      const saved = localStorage.getItem(SORT_STORAGE_KEY);
+      return SORT_MODES.includes(saved) ? saved : "popular";
+    } catch {
+      return "popular";
     }
   }
+  let sortMode = storedSortMode();
+  let activeChapter = null;
+  let activeEdition = null;
+  let currentUser = null;
+  let comments = [];
+  const commentsById = new Map();
+  let replyCounts = {};
+  let expandedReplies = new Set();
+  let loaded = false;
+  let giscusStarted = false;
 
-  window.addEventListener("storage", (e) => {
-    if (e.key === GISCUS_SESSION_KEY && e.newValue) {
-      const frame = mount()?.querySelector("iframe.giscus-frame");
-      if (frame) {
-        try {
-          const url = new URL(frame.src);
-          url.searchParams.set("session", JSON.parse(e.newValue));
-          frame.src = url.toString();
-        } catch {}
-      }
-    }
-  });
+  const $ = (selector) => document.querySelector(selector);
+  const nativeMount = () => $("#native-comments");
+  const status = () => $("#comments-status");
 
-  let active = null,
-    activeEdition = null,
-    started = false;
-  const GISCUS_THEME_BASE = `${location.origin}/giscus`;
-  const GISCUS_THEME_VERSION = "owners-v3";
-  const theme = () =>
-    ["light", "sepia"].includes(document.body.dataset.theme)
+  function themeUrl() {
+    const theme = document.body.dataset.theme || "";
+    const isLight = ["light", "sepia"].includes(theme) || theme.endsWith("-light");
+    return isLight
       ? `${GISCUS_THEME_BASE}/light.css?v=${GISCUS_THEME_VERSION}`
       : `${GISCUS_THEME_BASE}/dark.css?v=${GISCUS_THEME_VERSION}`;
-  const mount = () => document.getElementById("giscus-thread");
-  function sync() {
-    const frame = mount()?.querySelector("iframe.giscus-frame");
-    const category = window.READER_CONFIG?.giscus?.categories?.[activeEdition];
-    if (frame && active && category?.name && category?.id)
-      frame.contentWindow.postMessage(
-        {
-          giscus: {
-            setConfig: {
-              term: active,
-              theme: theme(),
-              category: category.name,
-              categoryId: category.id,
-            },
-          },
-        },
-        "https://giscus.app",
-      );
   }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function markdown(value) {
+    const escaped = escapeHtml(value);
+    const lines = escaped.split(/\r?\n/);
+    const output = [];
+    let list = false;
+    for (const line of lines) {
+      if (/^\s*[-*]\s+/.test(line)) {
+        if (!list) output.push("<ul>");
+        list = true;
+        output.push(`<li>${line.replace(/^\s*[-*]\s+/, "")}</li>`);
+        continue;
+      }
+      if (list) {
+        output.push("</ul>");
+        list = false;
+      }
+      output.push(line ? `<p>${line}</p>` : "");
+    }
+    if (list) output.push("</ul>");
+    return output.join("")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/_([^_]+)_/g, "<em>$1</em>")
+      .replace(/https?:\/\/[^\s<]+/g, (url) => {
+        const safe = url.replace(/[)"'<>]+$/, "");
+        return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${safe}</a>`;
+      });
+  }
+
+  function relativeTime(value) {
+    const time = new Date(value).getTime();
+    if (!Number.isFinite(time)) return "";
+    const minutes = Math.floor(Math.max(0, Date.now() - time) / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    return new Date(time).toLocaleDateString();
+  }
+
+  async function request(path, options = {}) {
+    const response = await fetch(path, {
+      credentials: "include",
+      headers: options.body ? { "Content-Type": "application/json" } : undefined,
+      ...options,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    let data = {};
+    if (contentType.includes("application/json")) {
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+    }
+    if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+    return data;
+  }
+
+  const SMILE_ICON = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11v1a10 10 0 1 1-9-10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/><path d="M16 5h6"/><path d="M19 2v6"/></svg>`;
+  const DISCORD_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`;
+
+  function loginUrl() {
+    return `/api/auth/discord?returnTo=${encodeURIComponent(location.pathname)}`;
+  }
+
+  function userHeader() {
+    if (currentUser) {
+      const avatar = currentUser.avatarUrl
+        ? `<img src="${escapeHtml(currentUser.avatarUrl)}" alt="" class="native-comment-avatar">`
+        : '<span class="native-comment-avatar"></span>';
+      return `<div class="native-comments-user">${avatar}<span>${escapeHtml(currentUser.displayName)}</span>
+        <a class="native-user-signout" href="/api/auth/logout?returnTo=${encodeURIComponent(location.pathname)}" title="Sign out">Sign out</a></div>`;
+    }
+    return `<a class="native-comments-login" href="${loginUrl()}">${DISCORD_ICON} Sign in with Discord</a>`;
+  }
+
+  function reactionButtons(reactions, commentId, chapter = false) {
+    const existing = new Map((reactions || []).map((reaction) => [reaction.emoji, reaction]));
+    const buttons = [...existing.values()]
+      .filter((reaction) => EMOJIS.includes(reaction.emoji) && reaction.count)
+      .map((reaction) => `<button class="native-reaction${reaction.mine ? " mine" : ""}" data-action="react"
+        data-id="${commentId || ""}" data-emoji="${escapeHtml(reaction.emoji)}" ${chapter ? 'data-chapter-reaction="true"' : ""}>
+        <span>${escapeHtml(reaction.emoji)}</span> <span class="native-reaction-count">${reaction.count}</span></button>`)
+      .join("");
+    if (!currentUser) return buttons;
+    return `${buttons}<button class="native-reaction native-reaction-add" data-action="react-picker" data-id="${commentId || ""}"
+      ${chapter ? 'data-chapter-reaction="true"' : ""} aria-label="Add reaction" title="Add reaction">${SMILE_ICON}</button>`;
+  }
+
+  function chapterReactionsHtml(reactions) {
+    const hasReactions = (reactions || []).some((r) => r.count > 0);
+    if (!hasReactions && !currentUser) return "";
+    return `<div class="native-chapter-reactions">
+      <div class="native-chapter-reactions-row">
+        ${reactionButtons(reactions, "", true)}
+        ${!hasReactions && currentUser ? '<span class="native-chapter-reactions-prompt">React to this chapter</span>' : ""}
+      </div>
+      <div class="native-chapter-picker" id="chapter-picker" style="display:none;">
+        ${EMOJIS.map((emoji) => `<button type="button" class="native-picker-emoji" data-action="react" data-chapter-reaction="true" data-emoji="${emoji}">${emoji}</button>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  function commentHtml(comment, compact = false) {
+    commentsById.set(comment.id, comment);
+    const avatar = comment.author.avatarUrl
+      ? `<img src="${escapeHtml(comment.author.avatarUrl)}" alt="" class="native-comment-avatar${compact ? " native-comment-avatar-sm" : ""}" loading="lazy">`
+      : `<div class="native-comment-avatar${compact ? " native-comment-avatar-sm" : ""}"></div>`;
+    const controls = currentUser
+      ? `<button class="native-comment-action" data-action="reply" data-id="${comment.id}">Reply</button>`
+      : "";
+    const canEdit = currentUser?.id === comment.author.id;
+    const canDelete = canEdit || currentUser?.isAdmin;
+    const ownerControls = `${canEdit
+      ? `<button class="native-comment-action" data-action="edit" data-id="${comment.id}">Edit</button>`
+      : ""}${canDelete
+      ? `<button class="native-comment-action native-action-delete" data-action="delete" data-id="${comment.id}">Delete</button>`
+      : ""}`;
+    const votes = comment.votes || { score: 0, mine: 0 };
+    return `<div class="native-comment${compact ? " native-comment-compact" : ""}" data-comment-id="${comment.id}">
+      ${avatar}
+      <div class="native-comment-content">
+        <div class="native-comment-head">
+          <span class="native-comment-name">${escapeHtml(comment.author.displayName)}</span>
+          ${comment.author.provider === "discord"
+            ? `<span class="native-badge native-badge-discord">${DISCORD_ICON} Discord</span>`
+            : `<span class="native-badge">GitHub</span>`}
+          ${comment.author.isLegacy ? '<span class="native-badge native-badge-legacy">legacy</span>' : ""}
+          <span class="native-comment-time" title="${escapeHtml(comment.createdAt)}">${relativeTime(comment.createdAt)}</span>
+          ${comment.edited ? '<span class="native-comment-edited">· edited</span>' : ""}
+        </div>
+        <div class="native-comment-body">${markdown(comment.body)}</div>
+        <div class="native-comment-actions">
+          <div class="native-vote-control" aria-label="Comment votes">
+            <button type="button" class="native-vote-button native-vote-up" data-action="vote" data-id="${comment.id}" data-value="1"
+              aria-label="Upvote" aria-pressed="${votes.mine === 1}">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+            </button>
+            <span class="native-vote-score">${Number(votes.score) || 0}</span>
+            <button type="button" class="native-vote-button native-vote-down" data-action="vote" data-id="${comment.id}" data-value="-1"
+              aria-label="Downvote" aria-pressed="${votes.mine === -1}">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+          </div>
+          <div class="native-reaction-row">${reactionButtons(comment.reactions, comment.id)}</div>
+          ${controls}${ownerControls}
+        </div>
+        ${replyCounts[comment.id] ? `<button class="native-reply-toggle${expandedReplies.has(comment.id) ? " expanded" : ""}" data-action="replies" data-id="${comment.id}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="native-reply-chevron"><path d="m6 9 6 6 6-6"/></svg>
+          ${expandedReplies.has(comment.id) ? "Hide replies" : `View ${replyCounts[comment.id]} ${replyCounts[comment.id] === 1 ? "reply" : "replies"}`}</button>` : ""}
+        ${expandedReplies.has(comment.id) ? `<div class="native-replies" data-replies="${comment.id}"></div>` : ""}
+      </div>
+    </div>`;
+  }
+
+  function composeHtml() {
+    if (!currentUser) {
+      return `<div class="native-empty-login">
+        <p>Sign in with Discord to react and join the discussion.</p>
+        <a class="native-comments-login" href="${loginUrl()}">${DISCORD_ICON} Sign in with Discord</a>
+      </div>`;
+    }
+    const avatar = currentUser.avatarUrl
+      ? `<img src="${escapeHtml(currentUser.avatarUrl)}" alt="" class="native-comment-avatar">`
+      : '<div class="native-comment-avatar"></div>';
+    return `<div class="native-compose-card">
+      ${avatar}
+      <form class="native-comment-compose" data-compose>
+        <textarea name="body" maxlength="4000" rows="3" placeholder="Write a comment…"></textarea>
+        <div class="native-compose-footer">
+          <small class="muted">Markdown supported. Hate speech &amp; slurs prohibited.</small>
+          <button class="native-comment-submit" type="submit">Comment</button>
+        </div>
+      </form>
+    </div>`;
+  }
+
+  function sortMenuHtml() {
+    return `<div class="native-sort-menu">
+      <label for="native-comment-sort">Sort by</label>
+      <select id="native-comment-sort" class="native-sort-select" data-sort aria-label="Sort comments">
+        <option value="popular"${sortMode === "popular" ? " selected" : ""}>Popular</option>
+        <option value="oldest"${sortMode === "oldest" ? " selected" : ""}>Oldest</option>
+        <option value="newest"${sortMode === "newest" ? " selected" : ""}>Newest</option>
+      </select>
+    </div>`;
+  }
+
+  function render() {
+    if (!nativeMount()) return;
+    commentsById.clear();
+    const roots = comments.filter((comment) => !comment.parentId);
+    const chapterReactions = window._nativeChapterReactions || [];
+    nativeMount().innerHTML = `<div class="native-comments-card">
+      ${chapterReactionsHtml(chapterReactions)}
+      <div class="native-comments-topbar">
+        <div class="native-comments-title-wrap">
+          <span class="native-comments-label">Comments</span>
+          <span class="native-comments-count-pill">${roots.length}</span>
+        </div>
+        ${userHeader()}
+      </div>
+      ${loaded ? sortMenuHtml() : ""}
+      ${composeHtml()}
+      ${loaded
+        ? roots.length
+          ? `<div class="native-comment-list">${roots.map((comment) => commentHtml(comment)).join("")}</div>`
+          : '<div class="native-empty">No comments yet. Be the first!</div>'
+        : '<button class="native-comment-submit" data-action="load">Load comments</button>'}
+    </div>`;
+    for (const root of roots.filter((comment) => expandedReplies.has(comment.id))) {
+      loadReplies(root.id);
+    }
+  }
+
+  async function loadReplies(id) {
+    const target = nativeMount().querySelector(`[data-replies="${id}"]`);
+    if (!target || target.dataset.loaded) return;
+    target.textContent = "Loading replies…";
+    try {
+      const data = await request(`/api/comments/${id}/replies`);
+      target.innerHTML = data.comments.map((comment) => commentHtml(comment, true)).join("");
+      target.dataset.loaded = "true";
+      for (const comment of data.comments.filter((item) => expandedReplies.has(item.id))) {
+        await loadReplies(comment.id);
+      }
+    } catch (error) {
+      target.textContent = error.message;
+    }
+  }
+
+  async function loadNative() {
+    if (!activeChapter) return;
+    try {
+      const [me, data, chapterReactions] = await Promise.all([
+        request("/api/me"),
+        request(`/api/comments?chapter=${encodeURIComponent(activeChapter)}&sort=${sortMode}`),
+        request(`/api/chapter-reactions?chapter=${encodeURIComponent(activeChapter)}`),
+      ]);
+      currentUser = me.user;
+      comments = data.comments || [];
+      replyCounts = data.replyCounts || {};
+      window._nativeChapterReactions = chapterReactions.reactions || [];
+      loaded = true;
+      render();
+    } catch (error) {
+      nativeMount().innerHTML = `<div class="native-error">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  async function refresh() {
+    const data = await request(`/api/comments?chapter=${encodeURIComponent(activeChapter)}&sort=${sortMode}`);
+    comments = data.comments || [];
+    replyCounts = data.replyCounts || {};
+    render();
+  }
+
+  async function submitComment(form, parentId = null) {
+    const textarea = form.querySelector("textarea");
+    const body = textarea.value.trim();
+    if (!body) return;
+    const button = form.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      await request("/api/comments", {
+        method: "POST",
+        body: JSON.stringify({ chapter: activeChapter, body, parentId }),
+      });
+      if (parentId !== null) expandedReplies.add(parentId);
+      await refresh();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function handleNativeClick(event) {
+    const target = event.target.closest("[data-action]");
+    if (!target) return;
+    const action = target.dataset.action;
+    const id = Number(target.dataset.id);
+    try {
+      if (action === "load") return loadNative();
+      if (action === "vote") {
+        if (!currentUser) {
+          alert("Sign in with Discord to vote.");
+          return;
+        }
+        const voteControl = target.closest(".native-vote-control");
+        const activeVote = Number(voteControl.querySelector('[data-action="vote"][aria-pressed="true"]')?.dataset.value || 0);
+        const value = Number(target.dataset.value) === activeVote ? 0 : Number(target.dataset.value);
+        const result = await request(`/api/comments/${id}/vote`, {
+          method: "POST",
+          body: JSON.stringify({ value }),
+        });
+        const updatedVotes = result.votes;
+        const score = voteControl.querySelector(".native-vote-score");
+        score.textContent = String(updatedVotes.score);
+        voteControl.querySelectorAll('[data-action="vote"]').forEach((button) => {
+          button.setAttribute("aria-pressed", String(Number(button.dataset.value) === updatedVotes.mine));
+        });
+        const comment = comments.find((item) => item.id === id);
+        if (comment) comment.votes = updatedVotes;
+        return;
+      }
+      if (action === "replies") {
+        if (expandedReplies.has(id)) expandedReplies.delete(id);
+        else expandedReplies.add(id);
+        render();
+        return;
+      }
+      if (action === "reply") {
+        const commentCard = target.closest("[data-comment-id]");
+        if (commentCard.querySelector("[data-reply-form]")) return;
+        const form = document.createElement("form");
+        form.className = "native-comment-compose native-reply-form";
+        form.dataset.replyForm = "true";
+        form.innerHTML = `<textarea maxlength="4000" rows="2" placeholder="Write a reply…"></textarea>
+          <div class="native-compose-footer">
+            <button class="native-comment-cancel" type="button" data-action="cancel-reply">Cancel</button>
+            <button class="native-comment-submit" type="submit">Reply</button>
+          </div>`;
+        form.addEventListener("submit", (e) => {
+          e.preventDefault();
+          submitComment(form, id);
+        });
+        commentCard.querySelector(".native-comment-content").append(form);
+        form.querySelector("textarea").focus();
+        return;
+      }
+      if (action === "cancel-reply") {
+        target.closest("[data-reply-form]")?.remove();
+        return;
+      }
+      if (action === "delete") {
+        if (!confirm("Delete this comment?")) return;
+        await request(`/api/comments/${id}`, { method: "DELETE" });
+        await refresh();
+        return;
+      }
+      if (action === "edit") {
+        const commentCard = target.closest("[data-comment-id]");
+        const comment = commentsById.get(id);
+        if (!comment) return;
+        const form = document.createElement("form");
+        form.className = "native-comment-compose";
+        form.innerHTML = `<textarea class="native-comment-edit" maxlength="4000" rows="3">${escapeHtml(comment.body)}</textarea>
+          <div class="native-compose-footer">
+            <button class="native-comment-cancel" type="button" data-action="cancel-edit">Cancel</button>
+            <button class="native-comment-submit" type="submit">Save</button>
+          </div>`;
+        form.querySelector("[data-action=cancel-edit]").addEventListener("click", () => render());
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          await request(`/api/comments/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ body: form.querySelector("textarea").value }),
+          });
+          await refresh();
+        });
+        commentCard.querySelector(".native-comment-body").replaceWith(form);
+        form.querySelector("textarea").focus();
+        return;
+      }
+      if (action === "react-picker") {
+        if (target.dataset.chapterReaction) {
+          const picker = document.getElementById("chapter-picker");
+          if (picker) {
+            picker.style.display = picker.style.display === "none" ? "flex" : "none";
+          }
+          return;
+        }
+        const existingPicker = target.closest(".native-comment-actions")?.querySelector(".native-picker-row");
+        if (existingPicker) {
+          existingPicker.remove();
+          return;
+        }
+        const picker = document.createElement("div");
+        picker.className = "native-picker-row";
+        picker.style.display = "flex";
+        picker.style.flexWrap = "wrap";
+        picker.style.gap = "2px";
+        picker.style.marginTop = "4px";
+        picker.style.width = "100%";
+        picker.innerHTML = EMOJIS.map((emoji) => `<button type="button" class="native-picker-emoji" data-action="react"
+          data-id="${id}" data-emoji="${emoji}">${emoji}</button>`).join("");
+        target.closest(".native-comment-actions").append(picker);
+        return;
+      }
+      if (action === "react") {
+        const emoji = target.dataset.emoji;
+        if (target.dataset.chapterReaction) {
+          const result = await request("/api/chapter-reactions", {
+            method: "POST",
+            body: JSON.stringify({ chapter: activeChapter, emoji }),
+          });
+          window._nativeChapterReactions = result.reactions;
+        } else {
+          const result = await request(`/api/comments/${id}/reactions/${encodeURIComponent(emoji)}`, { method: "POST" });
+          const comment = comments.find((item) => item.id === id);
+          if (comment) comment.reactions = result.reactions;
+        }
+        render();
+      }
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  async function handleNativeChange(event) {
+    const select = event.target.closest("[data-sort]");
+    if (!select || !SORT_MODES.includes(select.value)) return;
+    sortMode = select.value;
+    try {
+      localStorage.setItem(SORT_STORAGE_KEY, sortMode);
+    } catch {
+      // Sorting still applies for this page view when storage is unavailable.
+    }
+    try {
+      await refresh();
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  function startLegacyGiscus() {
+    if (giscusStarted || !activeEdition || !activeChapter) return;
+    const config = window.READER_CONFIG?.giscus;
+    const category = config?.categories?.[activeEdition];
+    if (!config?.repo || !category?.name || !category?.id) return;
+    giscusStarted = true;
+    const script = document.createElement("script");
+    script.src = "https://giscus.app/client.js";
+    script.async = true;
+    script.crossOrigin = "anonymous";
+    const attrs = {
+      repo: config.repo,
+      "repo-id": config.repoId,
+      category: category.name,
+      "category-id": category.id,
+      mapping: "specific",
+      term: `htbasw-${activeEdition}-chapter-${activeChapter.split(":")[1]}`,
+      strict: "1",
+      "reactions-enabled": "1",
+      "emit-metadata": "0",
+      "input-position": "top",
+      theme: themeUrl(),
+      lang: "en",
+      loading: "lazy",
+    };
+    Object.entries(attrs).forEach(([key, value]) => script.setAttribute(`data-${key}`, value));
+    $("#giscus-thread")?.append(script);
+  }
+
+  function syncGiscusTheme() {
+    const frame = $("#giscus-thread iframe.giscus-frame");
+    if (!frame) return;
+    frame.contentWindow.postMessage({ giscus: { setConfig: { theme: themeUrl() } } }, "https://giscus.app");
+  }
+
   window.readerComments = {
     clear() {
-      document.getElementById("comments").hidden = true;
-      active = null;
+      $("#comments").hidden = true;
+      activeChapter = null;
       activeEdition = null;
+      currentUser = null;
+      comments = [];
+      commentsById.clear();
+      loaded = false;
+      giscusStarted = false;
+      if (nativeMount()) nativeMount().replaceChildren();
+      if ($("#giscus-thread")) $("#giscus-thread").replaceChildren();
     },
     show(edition, number) {
-      active = `htbasw-${edition}-chapter-${number}`;
       activeEdition = edition;
-      try {
-        sessionStorage.setItem(
-          "giscus-return-to",
-          `/${edition}/chapter-${number}`,
-        );
-      } catch {}
-      const section = document.getElementById("comments"),
-        status = document.getElementById("comments-status");
-      section.hidden = false;
-      const c = window.READER_CONFIG?.giscus;
-      const category = c?.categories?.[edition];
-      if (!c || !c.repo || !c.repoId || !category?.name || !category?.id) {
-        status.textContent = "Comments are coming soon.";
-        return;
-      }
-      status.textContent =
-        "Comments and reactions are powered by GitHub Discussions. Sign in with GitHub to join in.";
-      if (started) {
-        sync();
-        return;
-      }
-      started = true;
-      const observer = new MutationObserver(() => {
-        const frame = mount().querySelector("iframe.giscus-frame");
-        if (frame) {
-          frame.title = "Chapter comments";
-          frame.addEventListener("load", sync);
-          sync();
-          observer.disconnect();
-        }
+      activeChapter = `${edition}:${number}`;
+      loaded = false;
+      giscusStarted = false;
+      expandedReplies = new Set();
+      $("#comments").hidden = false;
+      status().textContent = "Loading comments…";
+      nativeMount().replaceChildren();
+      $("#giscus-thread")?.replaceChildren();
+      loadNative().finally(() => {
+        status().textContent = "Comments are powered by Discord. Legacy GitHub discussions remain available below.";
       });
-      observer.observe(mount(), { childList: true, subtree: true });
-      const script = document.createElement("script");
-      script.src = "https://giscus.app/client.js";
-      script.async = true;
-      script.crossOrigin = "anonymous";
-      const attrs = {
-        repo: c.repo,
-        "repo-id": c.repoId,
-        category: category.name,
-        "category-id": category.id,
-        mapping: "specific",
-        term: active,
-        strict: "1",
-        "reactions-enabled": "1",
-        "emit-metadata": "0",
-        "input-position": "top",
-        theme: theme(),
-        lang: "en",
-        loading: "lazy",
-      };
-      Object.entries(attrs).forEach(([k, v]) =>
-        script.setAttribute("data-" + k, v),
-      );
-      script.onerror = () => {
-        status.textContent =
-          "Comments could not load. Please check your connection and reload to try again.";
-        observer.disconnect();
-      };
-      mount().append(script);
     },
-    theme: sync,
+    theme() {
+      syncGiscusTheme();
+    },
   };
-})();
 
-// ── Profanity / slur filter for Giscus comment submission ──
-// Intercepts postMessage traffic from the page to giscus iframe.
-// Blocks racial slurs while allowing general swearing.
-(function () {
-  // List of blocked slurs (case-insensitive, whole-word match).
-  // General swearing is intentionally NOT in this list.
-  const BLOCKED_PATTERNS = [
-    /\bn[i1!|]+[g9]+[e3]+r+s?\b/i, // n-word variants
-    /\bn[i1!|]+g{2,}[ae]*\b/i, // nigga variants
-    /\bpaj[e3][e3]t+s?\b/i, // pajeet
-    /\bch[i1][n]+[k]+s?\b/i, // chink
-    /\bsp[i1][c]+s?\b/i, // spic
-    /\bgooks?\b/i, // gook
-    /\bk[i1]k[e3]s?\b/i, // kike
-    /\bwetbacks?\b/i, // wetback
-    /\bbeaner[s]?\b/i, // beaner
-    /\bh[a4]jj[i1]\b/i, // hajji
-    /\bsandnigger[s]?\b/i, // sand n-word
-    /\bcoon[s]?\b/i, // coon (racial context)
-    /\bjigaboo[s]?\b/i, // jigaboo
-    /\bporch\s*monkey\b/i, // porch monkey
-    /\bzipper\s*head\b/i, // zipperhead
-    /\bsl[a4]nt\s*ey[e3]d?\b/i, // slant-eyed
-    /\bwhite\s*tr[a4]sh\b/i, // white trash (ethnic slur)
-    /\bcrackers?\b/i, // cracker (racial)
-    /\btr[a4]nn[y1][s]?\b/i, // transphobic slur
-    /\bretards?\b/i, // ableist slur
-  ];
-
-  const BLOCK_MSG =
-    "⚠️ Your comment contains a slur or hate speech and was not submitted. " +
-    "General language is fine, but racial/ethnic slurs are not allowed.";
-
-  function containsSlur(text) {
-    return BLOCKED_PATTERNS.some((re) => re.test(text));
-  }
-
-  // Watch for messages sent TO giscus (from our page) and intercept submissions.
-  // Also watch for messages FROM giscus that carry user-typed content.
-  const origPostMessage = window.postMessage.bind(window);
-
-  // Override iframe's contentWindow.postMessage to intercept outbound messages.
-  // We patch via a MutationObserver that watches when the giscus iframe appears.
-  const GISCUS_ORIGIN = "https://giscus.app";
-
-  function patchGiscusFrame(frame) {
-    if (!frame || frame._profanityPatched) return;
-    frame._profanityPatched = true;
-
-    const origFramePost = frame.contentWindow?.postMessage?.bind(
-      frame.contentWindow,
-    );
-    if (!origFramePost) return;
-
-    // We cannot intercept what the user types inside the iframe directly.
-    // Instead, listen for the "submit" message that giscus posts to parent.
-    window.addEventListener("message", (e) => {
-      if (e.origin !== GISCUS_ORIGIN) return;
-      try {
-        const data = e.data?.giscus;
-        // giscus fires a "discussion" event with the new comment body
-        if (data?.discussion?.comments?.nodes) {
-          // After-the-fact: we can show a warning banner but cannot retract.
-        }
-      } catch {}
-    });
-  }
-
-  // Primary approach: intercept the "createDiscussion" / "createComment" calls
-  // by watching messages the PAGE sends into the iframe.
-  // We wrap HTMLIFrameElement.contentWindow.postMessage.
-  const _origDesc = Object.getOwnPropertyDescriptor(
-    HTMLIFrameElement.prototype,
-    "contentWindow",
-  );
-  if (_origDesc) {
-    Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
-      get() {
-        const win = _origDesc.get.call(this);
-        if (!win || !this.src?.startsWith(GISCUS_ORIGIN)) return win;
-        if (win._profanityProxy) return win._profanityProxy;
-        const proxy = new Proxy(win, {
-          get(target, prop) {
-            if (prop === "postMessage") {
-              return function (msg, targetOrigin, ...rest) {
-                try {
-                  const body =
-                    msg?.giscus?.createComment?.body ||
-                    msg?.giscus?.createDiscussion?.body ||
-                    "";
-                  if (body && containsSlur(body)) {
-                    showSlurWarning();
-                    return;
-                  }
-                } catch {}
-                return target.postMessage(msg, targetOrigin, ...rest);
-              };
-            }
-            const val = target[prop];
-            return typeof val === "function" ? val.bind(target) : val;
-          },
-        });
-        win._profanityProxy = proxy;
-        return proxy;
-      },
-      configurable: true,
-    });
-  }
-
-  function showSlurWarning() {
-    let banner = document.getElementById("profanity-warning");
-    if (!banner) {
-      banner = document.createElement("div");
-      banner.id = "profanity-warning";
-      banner.setAttribute("role", "alert");
-      banner.style.cssText = [
-        "position:fixed",
-        "bottom:80px",
-        "left:50%",
-        "transform:translateX(-50%)",
-        "max-width:min(520px,90vw)",
-        "background:#5c1a1a",
-        "color:#fdd",
-        "border:1px solid #a33",
-        "border-radius:10px",
-        "padding:14px 20px",
-        "font-size:13px",
-        "line-height:1.5",
-        "z-index:9999",
-        "box-shadow:0 8px 30px #0008",
-        "text-align:center",
-      ].join(";");
-      document.body.appendChild(banner);
+  $("#native-comments")?.addEventListener("click", handleNativeClick);
+  $("#native-comments")?.addEventListener("change", handleNativeChange);
+  $("#native-comments")?.addEventListener("submit", (event) => {
+    if (event.target.matches("[data-compose]")) {
+      event.preventDefault();
+      submitComment(event.target);
     }
-    banner.textContent = BLOCK_MSG;
-    banner.style.display = "block";
-    clearTimeout(banner._hideTimer);
-    banner._hideTimer = setTimeout(() => (banner.style.display = "none"), 6000);
-  }
-
-  // Show a static notice above the giscus thread
-  const mountObserver = new MutationObserver(() => {
-    const thread = document.getElementById("giscus-thread");
-    if (!thread || document.getElementById("profanity-notice")) return;
-    const notice = document.createElement("p");
-    notice.id = "profanity-notice";
-    notice.className = "muted";
-    notice.style.cssText =
-      "font-size:11px;margin:0 0 12px;border-left:2px solid var(--line);padding-left:8px;";
-    notice.textContent =
-      "Friendly reminder: NO SPOILERS & swearing is okay, but racial and ethnic slurs will be removed by moderators.";
-    thread.before(notice);
   });
-  mountObserver.observe(document.body, { childList: true, subtree: true });
+  $("#legacy-comments")?.addEventListener("toggle", (event) => {
+    if (event.target.open) startLegacyGiscus();
+  });
 })();

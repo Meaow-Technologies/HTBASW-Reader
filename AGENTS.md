@@ -14,9 +14,10 @@ source chapters, generates the website and EPUB, and writes the deployment
 artifact to `dist/`. Cloudflare Pages serves the static output and runs the
 Functions in `functions/`.
 
-The project has no application database, account system, server-rendered
-templates, or runtime npm dependencies. Reading progress, bookmarks, themes,
-fonts, backgrounds, and text size are stored in the visitor's browser.
+The project has no server-rendered templates or runtime npm dependencies.
+Reading progress, bookmarks, themes, fonts, backgrounds, and text size are
+stored in the visitor's browser. Native chapter comments use Cloudflare D1 and
+Discord OAuth through the Pages Functions.
 
 ## Source of truth and generated output
 
@@ -31,6 +32,9 @@ Edit source files only. Do not manually edit generated files in `dist/`.
 | `scripts/preview.py` | Runs the local static preview server on port 8766. |
 | `scripts/export_cloudflare.py` | Creates the Cloudflare Pages Direct Upload ZIP. |
 | `functions/_middleware.js` | Cloudflare security headers and request limiting. |
+| `functions/schema.sql` | Cloudflare D1 schema for native comments and reactions. |
+| `functions/api/` | Discord authentication and native comment API routes. |
+| `functions/migrations/` | Incremental D1 migrations for comment features. |
 | `functions/github-discussion-webhook.js` | Verifies GitHub Discussion webhooks and forwards comments to Discord. |
 | `tests/test_build.py` | Regression tests for build propagation, metadata, navigation, and EPUB consistency. |
 | `dist/` | Generated deployment output. Recreated by the build. |
@@ -250,14 +254,13 @@ giscus: {
 }
 ```
 
-`website/scripts/comments.js`:
-
-- Mounts Giscus after a chapter is loaded.
-- Uses stable keys such as `htbasw-first-chapter-12`.
-- Stores a return path for Giscus authentication.
-- Applies the configured local theme.
-- Uses the theme files under `website/giscus/`.
-- Shows a useful fallback when Giscus configuration is incomplete.
+`website/scripts/comments.js` mounts the native D1-backed discussion UI after a
+chapter is loaded and keeps legacy Giscus discussions available in a collapsed
+section. Native comments support Discord sign-in, replies, reactions, voting,
+editing, deletion, moderation, and chapter-level reactions. Giscus uses stable
+keys such as `htbasw-first-chapter-12`, stores a return path for authentication,
+applies the configured local theme, and uses the theme files under
+`website/giscus/`.
 
 The custom theme files are:
 
@@ -291,7 +294,14 @@ Required Cloudflare Pages secrets:
 ```text
 GITHUB_WEBHOOK_SECRET
 DISCORD_GISCUS_WEBHOOK_URL
+DISCORD_CLIENT_ID
+DISCORD_CLIENT_SECRET
+SESSION_SECRET
 ```
+
+Bind a Cloudflare D1 database to the Pages Functions as `COMMENTS_DB` and
+initialize it with `functions/schema.sql`, followed by the migrations in
+`functions/migrations/`.
 
 Use a new random project-specific secret. Set the exact same value in the
 GitHub repository webhook and Cloudflare Pages. Never commit secrets or place
@@ -357,7 +367,8 @@ Expected webhook results:
 - `200`: valid GitHub delivery accepted.
 - `404`: the Function was not deployed or the route is wrong.
 
-The local preview cannot validate deployed middleware or webhook behavior.
+The local preview cannot validate deployed middleware, native comment APIs,
+Discord OAuth, D1 bindings, or webhook behavior.
 
 ## Safe change practices
 
