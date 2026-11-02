@@ -1,6 +1,8 @@
 const REPOSITORY = "Meaow-Technologies/HTBASW-Reader";
 const MAX_DESCRIPTION_LENGTH = 4_000;
-const WEBHOOK_AVATAR_URL = "https://htbasw.pages.dev/assets/images/lee.jpg";
+// The version query prevents Discord from retaining an older cached webhook avatar.
+const WEBHOOK_AVATAR_URL =
+  "https://htbasw.pages.dev/assets/images/lee.jpg?v=2";
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {

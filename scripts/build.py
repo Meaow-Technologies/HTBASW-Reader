@@ -307,7 +307,7 @@ def _build_chapter_head(edition, n, count, title, chapter_html, canonical_url):
     edition_name = EDITION_NAMES[edition]
     page_title = f"Chapter {n}: {suffix} | How to Become a Star Writer ({edition_name})"
     snippet = _chapter_snippet(chapter_html)
-    desc_prefix = f'Read Chapter {n}, "{suffix}", of How to Become a Star Writer ({edition_name}) by Sing Shong online. '
+    desc_prefix = f'Read HTBASW Chapter {n}, "{suffix}", from How to Become a Star Writer ({edition_name}) online. '
     desc = desc_prefix + snippet
     if len(desc) > 160:
         # Trim snippet to fit
@@ -317,6 +317,8 @@ def _build_chapter_head(edition, n, count, title, chapter_html, canonical_url):
             desc = desc_prefix + snippet2
         else:
             desc = desc[:157] + "…"
+        if len(desc) > 160:
+            desc = desc[:159] + "…"
     og_image = f"{SITE_URL}/assets/images/star-writer-cover.png"
     breadcrumb_items = [
         {"@type": "ListItem", "position": 1, "name": "Home", "item": SITE_URL + "/"},
@@ -367,13 +369,13 @@ def _build_edition_head(edition, count, canonical_url):
     page_title = f"How to Become a Star Writer — {edition_name} ({count} chapters) | STAR WRITER Reader"
     if edition == "first":
         desc = (
-            f"Read How to Become a Star Writer — Story by Sing Shong online. "
-            f"The original 2016 publication with {count} chapters. Browse the full chapter list."
+            f"Read HTBASW (How to Become a Star Writer) web novel online by Sing Shong. "
+            f"Browse all {count} chapters and download the EPUB."
         )
     else:
         desc = (
-            f"Read How to Become a Star Writer — Author’s notice by Sing Shong online. "
-            f"The complete story with {count} chapters. Browse the full chapter list."
+            f"Read HTBASW (How to Become a Star Writer) online by Sing Shong. "
+            f"Browse the complete {count}-chapter edition and download the EPUB."
         )
     if len(desc) > 160:
         desc = desc[:157] + "…"
@@ -417,19 +419,35 @@ def _build_edition_head(edition, count, canonical_url):
 
 def _build_homepage_head():
     """Build the homepage-specific meta tags (after stripping old ones)."""
-    page_title = (
-        "How to Become a Star Writer (STAR WRITER) – Read Online | STAR WRITER Reader"
-    )
-    desc = "Read How to Become a Star Writer (STAR WRITER) by Sing Shong online. All chapters, bookmarks, reading settings and EPUB downloads."
+    page_title = "How to Become a Star Writer Online | HTBASW Web Novel Reader"
+    desc = "Read HTBASW (How to Become a Star Writer) web novel online by Sing Shong. Browse every chapter, save your progress, and download the EPUB."
     og_image = f"{SITE_URL}/assets/images/star-writer-cover.png"
     canonical = f"{SITE_URL}/"
     ld_json = json.dumps(
         {
             "@context": "https://schema.org",
-            "@type": "WebSite",
-            "name": "How to Become a Star Writer Reader",
-            "alternateName": ["STAR WRITER", "STAR WRITER Reader"],
-            "url": f"{SITE_URL}/",
+            "@graph": [
+                {
+                    "@type": "WebSite",
+                    "name": "How to Become a Star Writer Reader",
+                    "alternateName": ["HTBASW", "STAR WRITER", "STAR WRITER Reader"],
+                    "url": f"{SITE_URL}/",
+                },
+                {
+                    "@type": "Book",
+                    "name": "How to Become a Star Writer",
+                    "alternateName": ["HTBASW", "STAR WRITER"],
+                    "author": {"@type": "Person", "name": "Sing Shong"},
+                    "url": f"{SITE_URL}/first",
+                    "workExample": {
+                        "@type": "Book",
+                        "bookFormat": "https://schema.org/EBook",
+                        "encodingFormat": "application/epub+zip",
+                        "name": "How to Become a Star Writer EPUB",
+                        "contentUrl": f"{SITE_URL}/assets/downloads/{EPUB_NAMES['first']}.epub",
+                    },
+                },
+            ],
         },
         ensure_ascii=False,
     )
