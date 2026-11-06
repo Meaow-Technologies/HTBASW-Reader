@@ -191,12 +191,15 @@
   background-position: center 40%;
 }
 
-/* ── New nav icon buttons (Discord, GitHub, Donate) ── */
+/* ── New nav icon buttons (Discord, GitHub, Reddit, Donate) ── */
 .discord-button {
   color: #b89cf2;
 }
 .github-button {
   color: #87cdd2;
+}
+.reddit-button {
+  color: #ff7652;
 }
 .donation-button {
   color: #f08eb4;
@@ -252,6 +255,14 @@ body.header-hidden > header {
 .discord-action:hover {
   border-color: #b89cf2;
   color: #b89cf2;
+}
+.reddit-action {
+  color: #ff7652;
+  border-color: #ff765260;
+}
+.reddit-action:hover {
+  border-color: #ff7652;
+  color: #ff987d;
 }
 .donate-action {
   color: #f08eb4;
